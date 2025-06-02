@@ -4,7 +4,7 @@ import time
 
 # Pin(0, Pin.IN, Pin.PULL_UP)  # SDA
 # Pin(1, Pin.IN, Pin.PULL_UP)  # SCL
-uart1 = UART(1, baudrate=115200, tx=Pin(8), rx=Pin(9))
+uart1 = UART(0, baudrate=115200, tx=Pin(0), rx=Pin(1))
 from ssd1306 import  oled, weight_oled
 
 oled()
@@ -116,18 +116,82 @@ def calibrate(a):
         print("Invalid input. Calibration failed.")
         return None
 
-def uart_send(scale_1, scale_2):
+# def uart_send(scale_1, scale_2):
+#     try:
+#         scale1 = b'Scale_1' + scale_1.to_bytes(2, 'big')
+#         scale2 = b'Scale_2' + scale_2.to_bytes(2, 'big')
+#         uart1.write(scale1 + scale2)
+#         print("Sent:", scale1, scale2)
+#         time.sleep_ms(1)
+#
+#     except Exception as e:
+#         print("UART send error:", e)
 
+# def uart_receive():
+#     try:
+#         # Read 18 bytes
+#         data = uart1.read(18)
+#
+#         if data is None or len(data) < 18:
+#             print("Incomplete data received:", data)
+#             return None, None
+#
+#         if data.startswith(b'Scale_1') and b'Scale_2' in data:
+#             scale1_bytes = data[7:9]
+#             scale2_bytes = data[16:18]
+#
+#             scale_1 = int.from_bytes(scale1_bytes, 'big')
+#             scale_2 = int.from_bytes(scale2_bytes, 'big')
+#
+#             print("Received scales:", scale_1, scale_2)
+#             return scale_1, scale_2
+#         else:
+#             print("Invalid data format:", data)
+#             return None, None
+#
+#     except Exception as e:
+#         print("UART receive error:", e)
+#         return None, None
+
+def uart_send(scale_1, scale_2):
     try:
-        scale1 = scale_1.to_bytes(2, 'big')
-        scale2 = scale_2.to_bytes(2, 'big')
-        uart1.write(scale1 + scale2)
-        print("Sent:", scale1, scale2)
+        # Convert to string with labels, separated by comma, ending with newline
+        message = f"Scale_1:{scale_1}\r\n,Scale_2:{scale_2}\r\n"
+
+        # Encode string to bytes for UART transmission
+        uart1.write(message.encode('utf-8'))
+
+        print("Sent string:", message.strip())
         time.sleep_ms(1)
-        # uart1.read(5)  # read up to 5 bytes
 
     except Exception as e:
         print("UART send error:", e)
+
+
+def uart_receive():
+    try:
+        # Read until newline (or fixed size if needed)
+        data = uart1.readline()
+
+        if data:
+            decoded = data.decode('utf-8').strip()
+            print("Received string:", decoded)
+
+            # Split and parse values
+            parts = decoded.split(',')
+            scale_1 = int(parts[0].split(':')[1])
+            scale_2 = int(parts[1].split(':')[1])
+
+            return scale_1, scale_2
+        else:
+            print("No data received.")
+            return None, None
+
+    except Exception as e:
+        print("UART receive error:", e)
+        return None, None
+
+
 
 def main():
     # Initialize HX711
@@ -206,7 +270,7 @@ def main():
                 hx2.power_down()
                 hx2.power_up()
                 uart_send(weight, weight2)
-
+                # uart_receive()
                 print('Button_pin', Button_pin.value())
                 if Button_pin.value() == 0:
                     machine.soft_reset()
