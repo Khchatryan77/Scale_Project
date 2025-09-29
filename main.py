@@ -2,9 +2,11 @@ from machine import Pin, UART
 import machine
 import time
 
-# Pin(0, Pin.IN, Pin.PULL_UP)  # SDA
-# Pin(1, Pin.IN, Pin.PULL_UP)  # SCL
-uart1 = UART(0, baudrate=115200, tx=Pin(0), rx=Pin(1))
+time.sleep(8)
+import _thread
+
+
+uart1 = UART(0, baudrate=128000, tx=Pin(0), rx=Pin(1))
 from ssd1306 import  oled, weight_oled
 
 oled()
@@ -16,7 +18,16 @@ DT_PIN_2 = 8  # Data pin (DOUT)
 SCK_PIN = 5  # Clock pin (PD_SCK)
 SCK_PIN_2 = 9  # Clock pin (PD_SCK)
 
+reset_done = None
+counter = 0
+
+Led_pin = 28
+Led = Pin(Led_pin, Pin.OUT)
+
 Button_pin = 29
+
+Button_pin_1 = 11
+Button_pin_2 = 12
 
 # Initialize pins
 dt = Pin(DT_PIN, Pin.IN)
@@ -25,7 +36,10 @@ sck = Pin(SCK_PIN, Pin.OUT)
 dt_2 = Pin(DT_PIN_2, Pin.IN)
 sck_2 = Pin(SCK_PIN_2, Pin.OUT)
 
-Button_pin = Pin(Button_pin, Pin.IN)
+Button_pin = Pin(Button_pin, Pin.IN,  Pin.PULL_UP)
+
+Button_pin_1 = Pin(Button_pin_1, Pin.IN,  Pin.PULL_UP)
+Button_pin_2 = Pin(Button_pin_2, Pin.IN,  Pin.PULL_UP)
 
 class HX711:
     def __init__(self, dout, pd_sck, gain=64):
@@ -89,6 +103,10 @@ class HX711:
         self.pd_sck.value(0)
         time.sleep_us(20)
 
+hx = HX711(dt, sck, gain=64)
+
+hx2 = HX711(dt_2, sck_2, gain=64)
+
 def calibrate(a):
     """Calibrate the scale using a known weight."""
     print("Remove any weight from the scale and press Enter in the REPL to tare.")
@@ -116,49 +134,8 @@ def calibrate(a):
         print("Invalid input. Calibration failed.")
         return None
 
-# def uart_send(scale_1, scale_2):
-#     try:
-#         scale1 = b'Scale_1' + scale_1.to_bytes(2, 'big')
-#         scale2 = b'Scale_2' + scale_2.to_bytes(2, 'big')
-#         uart1.write(scale1 + scale2)
-#         print("Sent:", scale1, scale2)
-#         time.sleep_ms(1)
-#
-#     except Exception as e:
-#         print("UART send error:", e)
-
-# def uart_receive():
-#     try:
-#         # Read 18 bytes
-#         data = uart1.read(18)
-#
-#         if data is None or len(data) < 18:
-#             print("Incomplete data received:", data)
-#             return None, None
-#
-#         if data.startswith(b'Scale_1') and b'Scale_2' in data:
-#             scale1_bytes = data[7:9]
-#             scale2_bytes = data[16:18]
-#
-#             scale_1 = int.from_bytes(scale1_bytes, 'big')
-#             scale_2 = int.from_bytes(scale2_bytes, 'big')
-#
-#             print("Received scales:", scale_1, scale_2)
-#             return scale_1, scale_2
-#         else:
-#             print("Invalid data format:", data)
-#             return None, None
-#
-#     except Exception as e:
-#         print("UART receive error:", e)
-#         return None, None
-
-def uart_send(scale_1, scale_2):
+def uart_send(message):
     try:
-        # Convert to string with labels, separated by comma, ending with newline
-        message = f"Scale_1:{scale_1}\r\n,Scale_2:{scale_2}\r\n"
-
-        # Encode string to bytes for UART transmission
         uart1.write(message.encode('utf-8'))
 
         print("Sent string:", message.strip())
@@ -167,46 +144,62 @@ def uart_send(scale_1, scale_2):
     except Exception as e:
         print("UART send error:", e)
 
+def core_1():
+    global uart_send
 
-def uart_receive():
+    while True:
+        uart_send()
+        time.sleep_ms(10)
+
+def uart_receive(uart1):
+
     try:
-        # Read until newline (or fixed size if needed)
-        data = uart1.readline()
+        if uart1.any():
 
-        if data:
-            decoded = data.decode('utf-8').strip()
+            decoded = uart1.readline().decode().strip()
             print("Received string:", decoded)
 
-            # Split and parse values
-            parts = decoded.split(',')
-            scale_1 = int(parts[0].split(':')[1])
-            scale_2 = int(parts[1].split(':')[1])
+            if decoded == "@WHO":
+                uart_send('@SCALE' + '\r\n')
+                return None
 
-            return scale_1, scale_2
-        else:
-            print("No data received.")
-            return None, None
+            elif decoded == "@RESET":
+                uart_send('@OK' + '\r\n')
+                machine.soft_reset()
+
+
+            elif decoded == "@scale_1_clean":
+                uart_send('@OK' + '\r\n')
+                hx.tare()
+
+
+            elif decoded == "@scale_2_clean":
+                uart_send('@OK' + '\r\n')
+                hx2.tare()
+
+            else:
+                print("Invalid format:", decoded)
+                uart_send('@ERROR' + '\r\n')
 
     except Exception as e:
         print("UART receive error:", e)
-        return None, None
+        return None
 
+uart1.irq(trigger = UART.IRQ_RXIDLE, handler = uart_receive)
 
+_thread.start_new_thread(uart_send, ())
 
 def main():
-    # Initialize HX711
-    hx = HX711(dt, sck, gain=64)
-
-    hx2 = HX711(dt_2, sck_2, gain=64)
 
     reset_done = True
+    global counter
+
     scale_list=[]
     scale_list1=[]
     try:
         # # Initial setup
         hx.power_up()
         hx.tare()
-        print('Highaaaaaaaaaaaaa')
 
         hx2.power_up()
         hx2.tare()
@@ -216,7 +209,7 @@ def main():
         # scaling_factor1 = calibrate(hx)
         # scaling_factor2 = calibrate(hx2)
 
-        scaling_factor1 = 105
+        scaling_factor1 = -105
         scaling_factor2 = -107.5
 
         if (scaling_factor1 and  scaling_factor2) is None:
@@ -227,8 +220,7 @@ def main():
         hx.scale = scaling_factor1
         hx2.scale = scaling_factor2
         print("Calibration complete. Starting continuous measurement...")
-        # reset_done = True
-        # oled() #ssD1306
+
         while True:
             if reset_done == True:
                 hx.tare()
@@ -240,6 +232,10 @@ def main():
                 scale_list1.append(int(hx2.get_weight(1)))
 
                 if len(scale_list)>2:
+                    if scale_list[0] - scale_list[1] > 2000:
+                        uart_send('@BOX_1 IS REMOVED' + '\r\n')
+                        hx.tare()
+
                     scale_list.pop(0)
                 print(scale_list)
                 c = 0
@@ -248,6 +244,10 @@ def main():
                 weight = int(c / len(scale_list))
 
                 if len(scale_list1)>2:
+                    if scale_list[0] - scale_list[1] > 2000:
+                        uart_send('@BOX_2 IS REMOVED' + '\r\n')
+                        hx2.tare()
+
                     scale_list1.pop(0)
                 print(scale_list1)
 
@@ -255,11 +255,6 @@ def main():
                 for i in scale_list1:
                     d=d+i
                 weight2=int(d/len(scale_list1))
-                # weight2 = int(hx2.get_weight(5))
-
-                # Print weight
-                print("Weight: {:.2f} grams".format(weight))
-                print("Weight_2: {:.2f} grams".format(weight2))
 
                 weight_oled(weight, weight2)
 
@@ -269,18 +264,61 @@ def main():
 
                 hx2.power_down()
                 hx2.power_up()
-                uart_send(weight, weight2)
-                # uart_receive()
-                print('Button_pin', Button_pin.value())
+
+                message = f"@Scale_1:{weight}\r\n@Scale_2:{weight2}\r\n"
+
+                uart_send(message)
+
+                if Button_pin_1.value() == 0:
+                    counter += 100
+                    Led.value(not Led.value())
+                    print(counter)
+
+                    if counter >= 1000:
+                        hx.tare()
+                        counter = 0
+                        Led.value(1)
+                        time.sleep(2)
+                        Led.value(0)
+                        while Button_pin_1.value() == 0:
+                            time.sleep(0.01)
+
+                elif Button_pin_2.value() == 0:
+                    counter += 100
+                    Led.value(not Led.value())
+                    print(counter)
+
+                    if counter >= 1000:
+                        hx2.tare()
+                        counter = 0
+                        Led.value(1)
+                        time.sleep(2)
+                        Led.value(0)
+                        while Button_pin_2.value() == 0:
+                            time.sleep(0.01)
+
+                else:
+                    counter = 0
+
                 if Button_pin.value() == 0:
+                    Led.value(1)
+                    time.sleep(0.2)
+                    Led.value(0)
+                    time.sleep(0.2)
+                    Led.value(1)
+                    time.sleep(0.2)
+                    Led.value(0)
+                    time.sleep(0.2)
                     machine.soft_reset()
 
+                time.sleep(0.1)
 
             except KeyboardInterrupt:
                 print("Exiting...")
-                break
+
             except Exception as e:
                 print("Error reading weight:", e)
+
 
     except KeyboardInterrupt:
         print("Exiting...")
@@ -289,7 +327,6 @@ def main():
     finally:
         hx.power_down()
         hx2.power_down()
-
 
 
 if __name__ == "__main__":
