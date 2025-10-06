@@ -1,13 +1,12 @@
 from machine import Pin, UART
 import machine
 import time
-
-time.sleep(8)
+import neopixel
+import ujson
 import _thread
 
-
 uart1 = UART(0, baudrate=128000, tx=Pin(0), rx=Pin(1))
-from ssd1306 import  oled, weight_oled
+from ssd1306 import oled, weight_oled
 
 oled()
 
@@ -18,16 +17,20 @@ DT_PIN_2 = 8  # Data pin (DOUT)
 SCK_PIN = 5  # Clock pin (PD_SCK)
 SCK_PIN_2 = 9  # Clock pin (PD_SCK)
 
+Running = True
 reset_done = None
 counter = 0
 
-Led_pin = 28
-Led = Pin(Led_pin, Pin.OUT)
+np = neopixel.NeoPixel(machine.Pin(16), 1)  # 1 LED on GP16
+
+Led = 28
 
 Button_pin = 29
 
 Button_pin_1 = 11
-Button_pin_2 = 12
+Button_pin_2 = 13
+
+counter = 0
 
 # Initialize pins
 dt = Pin(DT_PIN, Pin.IN)
@@ -36,10 +39,25 @@ sck = Pin(SCK_PIN, Pin.OUT)
 dt_2 = Pin(DT_PIN_2, Pin.IN)
 sck_2 = Pin(SCK_PIN_2, Pin.OUT)
 
-Button_pin = Pin(Button_pin, Pin.IN,  Pin.PULL_UP)
+Button_pin = Pin(Button_pin, Pin.IN, Pin.PULL_UP)
 
-Button_pin_1 = Pin(Button_pin_1, Pin.IN,  Pin.PULL_UP)
-Button_pin_2 = Pin(Button_pin_2, Pin.IN,  Pin.PULL_UP)
+Button_pin_1 = Pin(Button_pin_1, Pin.IN, Pin.PULL_UP)
+Button_pin_2 = Pin(Button_pin_2, Pin.IN, Pin.PULL_UP)
+
+
+def set_color(r, g, b):
+    np[0] = (r, g, b)
+    np.write()
+
+
+set_color(255, 0, 0)  # Red
+time.sleep(1)
+#set_color(0, 0, 255)  # Blue
+#time.sleep(1)
+#set_color(255, 255, 0)  # Yellow
+#time.sleep(1)
+
+
 
 class HX711:
     def __init__(self, dout, pd_sck, gain=64):
@@ -103,9 +121,11 @@ class HX711:
         self.pd_sck.value(0)
         time.sleep_us(20)
 
+
 hx = HX711(dt, sck, gain=64)
 
 hx2 = HX711(dt_2, sck_2, gain=64)
+
 
 def calibrate(a):
     """Calibrate the scale using a known weight."""
@@ -115,7 +135,6 @@ def calibrate(a):
     # Tare the scale
     a.tare()
     print("Tare complete. Place a known weight on the scale and enter its weight in grams.")
-
 
     try:
         known_weight = float(input("Enter the known weight (grams): "))
@@ -134,9 +153,10 @@ def calibrate(a):
         print("Invalid input. Calibration failed.")
         return None
 
+
 def uart_send(message):
     try:
-        uart1.write(message.encode('utf-8'))
+        uart1.write('@' + message + '\r\n')
 
         print("Sent string:", message.strip())
         time.sleep_ms(1)
@@ -144,15 +164,54 @@ def uart_send(message):
     except Exception as e:
         print("UART send error:", e)
 
-def core_1():
-    global uart_send
 
-    while True:
-        uart_send()
+def led_buttons():
+    global counter
+
+    if Button_pin_1.value() == 0:
+        set_color(255, 0, 0)  # red
+        counter += 250
+        print(counter)
+
+        if counter >= 1000:
+            set_color(0, 255, 255)  # green
+            hx.tare()
+            counter = 0
+            while Button_pin_1.value() == 0:
+                time.sleep(0.01)
+
+    elif Button_pin_2.value() == 0:
+        set_color(255, 0, 0)  # red
+        counter += 250
+        print(counter)
+
+        if counter >= 1000:
+            set_color(0, 255, 255)  # green
+            hx2.tare()
+            counter = 0
+            while Button_pin_2.value() == 0:
+                time.sleep(0.01)
+
+    else:
+        counter = 0
+        set_color(0, 255, 0)
+
+    if Button_pin.value() == 0:
+        set_color(255, 255, 255)
+        Running = False
+        time.sleep(2)
+        machine.reset()
+
+
+def core_1():
+    global uart_receive
+
+    while Running:
+        uart_receive()
         time.sleep_ms(10)
 
-def uart_receive(uart1):
 
+def uart_receive(uart1):
     try:
         if uart1.any():
 
@@ -160,42 +219,44 @@ def uart_receive(uart1):
             print("Received string:", decoded)
 
             if decoded == "@WHO":
-                uart_send('@SCALE' + '\r\n')
-                return None
+                uart1.write('SCALE' + '\r\n')
 
             elif decoded == "@RESET":
-                uart_send('@OK' + '\r\n')
-                machine.soft_reset()
-
+                uart_send('OK')
+                set_color(255, 255, 255)
+                Running = False
+                time.sleep(1)
+                machine.reset()
 
             elif decoded == "@scale_1_clean":
-                uart_send('@OK' + '\r\n')
+                uart_send('OK')
                 hx.tare()
 
 
             elif decoded == "@scale_2_clean":
-                uart_send('@OK' + '\r\n')
+                uart_send('OK')
                 hx2.tare()
 
             else:
                 print("Invalid format:", decoded)
-                uart_send('@ERROR' + '\r\n')
+                uart_send('ERROR')
 
     except Exception as e:
         print("UART receive error:", e)
         return None
 
-uart1.irq(trigger = UART.IRQ_RXIDLE, handler = uart_receive)
 
-_thread.start_new_thread(uart_send, ())
+uart1.irq(trigger=UART.IRQ_RXIDLE, handler=uart_receive)
+time.sleep(6)
+_thread.start_new_thread(uart_receive, ())
+
 
 def main():
-
     reset_done = True
     global counter
 
-    scale_list=[]
-    scale_list1=[]
+    scale_list = []
+    scale_list1 = []
     try:
         # # Initial setup
         hx.power_up()
@@ -212,7 +273,7 @@ def main():
         scaling_factor1 = -105
         scaling_factor2 = -107.5
 
-        if (scaling_factor1 and  scaling_factor2) is None:
+        if (scaling_factor1 and scaling_factor2) is None:
             print("Calibration failed. Exiting...")
             return
 
@@ -221,17 +282,18 @@ def main():
         hx2.scale = scaling_factor2
         print("Calibration complete. Starting continuous measurement...")
 
-        while True:
+        try:
             if reset_done == True:
                 hx.tare()
                 hx2.tare()
                 reset_done = False
-            try:
+
+            while True:
                 # Get weight (average of 5 readings)
                 scale_list.append(int(hx.get_weight(1)))
                 scale_list1.append(int(hx2.get_weight(1)))
 
-                if len(scale_list)>2:
+                if len(scale_list) > 2:
                     if scale_list[0] - scale_list[1] > 2000:
                         uart_send('@BOX_1 IS REMOVED' + '\r\n')
                         hx.tare()
@@ -243,7 +305,7 @@ def main():
                     c = c + i
                 weight = int(c / len(scale_list))
 
-                if len(scale_list1)>2:
+                if len(scale_list1) > 2:
                     if scale_list[0] - scale_list[1] > 2000:
                         uart_send('@BOX_2 IS REMOVED' + '\r\n')
                         hx2.tare()
@@ -253,71 +315,35 @@ def main():
 
                 d = 0
                 for i in scale_list1:
-                    d=d+i
-                weight2=int(d/len(scale_list1))
+                    d = d + i
+                weight2 = int(d / len(scale_list1))
 
                 weight_oled(weight, weight2)
 
                 # Power cycle to avoid buffer issues
                 hx.power_down()
+                time.sleep_ms(30)
                 hx.power_up()
 
                 hx2.power_down()
+                time.sleep_ms(30)
                 hx2.power_up()
 
-                message = f"@Scale_1:{weight}\r\n@Scale_2:{weight2}\r\n"
+                # message = f"@Scale_1:{weight}\r\n@Scale_2:{weight2}\r\n"
+                message = f"Scale_1:{weight} Scale_2:{weight2}"
+                scales = ujson.dumps(message)
+                uart_send(scales)
 
-                uart_send(message)
+                led_buttons()
 
-                if Button_pin_1.value() == 0:
-                    counter += 100
-                    Led.value(not Led.value())
-                    print(counter)
+                time.sleep(0.01)
 
-                    if counter >= 1000:
-                        hx.tare()
-                        counter = 0
-                        Led.value(1)
-                        time.sleep(2)
-                        Led.value(0)
-                        while Button_pin_1.value() == 0:
-                            time.sleep(0.01)
 
-                elif Button_pin_2.value() == 0:
-                    counter += 100
-                    Led.value(not Led.value())
-                    print(counter)
+        except KeyboardInterrupt:
+            print("Exiting...")
 
-                    if counter >= 1000:
-                        hx2.tare()
-                        counter = 0
-                        Led.value(1)
-                        time.sleep(2)
-                        Led.value(0)
-                        while Button_pin_2.value() == 0:
-                            time.sleep(0.01)
-
-                else:
-                    counter = 0
-
-                if Button_pin.value() == 0:
-                    Led.value(1)
-                    time.sleep(0.2)
-                    Led.value(0)
-                    time.sleep(0.2)
-                    Led.value(1)
-                    time.sleep(0.2)
-                    Led.value(0)
-                    time.sleep(0.2)
-                    machine.soft_reset()
-
-                time.sleep(0.1)
-
-            except KeyboardInterrupt:
-                print("Exiting...")
-
-            except Exception as e:
-                print("Error reading weight:", e)
+        except Exception as e:
+            print("Error reading weight:", e)
 
 
     except KeyboardInterrupt:
@@ -331,4 +357,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
